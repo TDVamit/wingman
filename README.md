@@ -1,11 +1,64 @@
 # Wingman
 
-A proof-of-concept that lets both **Claude Desktop** and **Codex CLI** control
-the *same* real Chrome browser session through one shared local process,
-using an MCP server on one side and Chrome's Native Messaging API on the
-other. There are two independent AI clients, but only one browser session
-and one connection to Chrome — the companion app is the single source of
-truth in the middle.
+[Demoly](https://app.demoly.dev) is a session-replay tool, not an AI agent —
+someone has to manually click around to produce a recording. Wingman is a
+proof-of-concept that adds AI-agent-controlled recording on top of Demoly, so
+either **Claude Desktop** or **Codex CLI** can drive a real Chrome session,
+narrate what it's doing with timestamped comments, and hand the result
+straight to Demoly, without a human at the wheel.
+
+What it adds to a plain Demoly recording:
+
+- **AI-driven recording** — tell Claude or Codex what to do in the browser
+  (fill a form, navigate a flow, test a signup) and it does it for real,
+  while rrweb captures every frame in the background.
+- **AI comments on the timeline** — every `browser_click` / `browser_type` /
+  `browser_scroll` / `browser_press_key` call can carry a short "why", shown
+  next to its timestamp in the replay — so a viewer sees *what the agent was
+  trying to do*, not just raw input events.
+- **Inactive-period speed boost** — idle gaps in the recording play back
+  compressed, both in Wingman's own player and, on upload, baked into the
+  timestamps Demoly stores — so Demoly's replay isn't stuck at 1x through
+  dead time it has no native way to skip.
+- **Download video** — a floating "Download video" button that the
+  extension injects on *any* rrweb replay page it detects — Wingman's own,
+  or one already hosted on Demoly — renders the replay headlessly and
+  exports it as an mp4.
+- **Upload to Demoly, with comments** — one click on the replay page pushes
+  the recording (plus every AI comment) into your Demoly workspace as a
+  shareable session.
+
+Because it's a real MCP server plus a real Native Messaging connection,
+**both** Claude Desktop and Codex CLI can be connected at once and share the
+same live browser tab — one client can pick up where the other left off.
+
+## How it works
+
+1. **Open the companion app** and load the Chrome extension (one-time setup,
+   see below).
+2. **Connect Claude Desktop and/or Codex CLI** from the companion app — each
+   is one click.
+3. **Give a prompt** in either client, e.g. *"Start a recording, go to our
+   signup page, fill it out as a test user, and note anything confusing."*
+   The agent drives the real browser and leaves comments as it goes.
+4. **Stop the recording.** It opens as a replay page with the rrweb player,
+   your AI's comments on a timeline, and buttons to **Download video** or
+   **Upload to Demoly**.
+
+### Sample prompts
+
+- "Start a recording, log into the staging site, and leave a comment
+  wherever the checkout flow feels slow."
+- "Record me navigating to /pricing, scrolling through all the plans, and
+  clicking 'Get started' on the middle one — comment on each step."
+- "Stop the current recording and tell me its status."
+- "What tabs do I have open right now?" (works without a recording running)
+
+## Architecture
+
+There are two independent AI clients, but only one browser session and one
+connection to Chrome — the companion app is the single source of truth in
+the middle.
 
 ```
 Claude Desktop  ─┐                                   ┌─ chrome.runtime.connectNative
@@ -109,10 +162,11 @@ Open the companion GUI → **Connect Codex**. This shells out to the official
 config format and any other servers you have registered are preserved
 without the companion touching that file directly.
 
-## Try it — five test prompts
+## Try it — five more test prompts
 
-With the companion running, the extension loaded, and at least one client
-connected, try these in Claude Desktop or Codex:
+Beyond the recording-focused prompts above, here are a few to sanity-check
+each individual capability once the companion is running, the extension is
+loaded, and at least one client is connected:
 
 1. "What tabs do I have open in Chrome right now?"
 2. "Go to http://localhost:8934/plain.html and tell me what's on the page." (serve `test-page/` locally first, e.g. `python3 -m http.server 8934` from that directory — `file://` pages are rejected, see Known limitations)
