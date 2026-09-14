@@ -1,4 +1,4 @@
-# Browser Agent
+# Wingman
 
 A proof-of-concept that lets both **Claude Desktop** and **Codex CLI** control
 the *same* real Chrome browser session through one shared local process,
@@ -44,11 +44,15 @@ Codex CLI       ─┘   mcp-adapter      (Electron,       └─ Native Messagi
 - Node.js 18+ (an nvm or Homebrew install is fine; see "PATH note" below)
 - Google Chrome
 - Claude Desktop and/or Codex CLI installed, to test the integrations
+- `ffmpeg` on `PATH` (`brew install ffmpeg`) — only needed for the replay
+  page's "Download video" feature
+- Playwright's bundled Chromium — only needed for "Download video" (see Build)
 
 ## Build
 
 ```
 npm install
+npx playwright install chromium   # only needed for "Download video"
 npm run build          # builds protocol, native-host, mcp-adapter,
                         # companion-core, extension, companion, in order
 ```
@@ -80,9 +84,11 @@ about an unidentified developer (right-click → Open once to bypass Gatekeeper)
 2. Chrome → `chrome://extensions` → enable **Developer mode**
 3. **Load unpacked** → select `apps/extension/dist`
 4. The extension ID should show as `maeongoknbjmjhiodjomkldpgbpfkfak` — this
-   is fixed by the dev keypair in `apps/extension/dev-keys`, so the Native
-   Messaging manifest's `allowed_origins` never needs manual editing after a
-   reload.
+   is pinned by the public key already baked into `apps/extension/manifest.json`'s
+   `"key"` field, so the Native Messaging manifest's `allowed_origins` never
+   needs manual editing after a reload. The matching private key
+   (`apps/extension/dev-keys/`) isn't tracked in git; you only need it if you
+   want to produce a signed `.crx`, not for local "Load unpacked" dev.
 5. Start the companion (dev or packaged). The extension's background worker
    auto-connects via `chrome.runtime.connectNative`.
 
@@ -132,17 +138,30 @@ directories) and bakes that absolute path into the native-host script's
 shebang and into the Claude/Codex MCP `command` field — nothing here should
 depend on any client inheriting your shell's `PATH`.
 
+## Demoly integration & video export
+
+Recordings save as a standalone replay `.html` page
+(`~/Library/Application Support/BrowserAgent/recordings/`) with an rrweb
+player and, if you're logged into [app.demoly.dev](https://app.demoly.dev) in
+Chrome with the extension installed, an "Upload to Demoly" panel that pushes
+the recording (plus any AI-agent notes recorded during the session) to your
+Demoly workspace as a shareable session replay.
+
+The replay page also has a "Download video" action that renders the replay
+in a headless browser and encodes it to an mp4 via ffmpeg. Known limitation:
+capture is currently capped at ~30fps — headless Chromium throttles its own
+frame production at the CDP level on macOS, independent of image quality,
+GPU backend, or headed vs. headless (confirmed by benchmarking; see git
+history/commit messages in `packages/companion-core/src/index.ts` for
+details). Getting past that ceiling would require real OS-level screen
+recording instead.
+
 ## Known limitations (POC scope)
 
 - macOS only.
-- Recording is a stub: `recording_start` / `recording_stop` /
-  `recording_status` genuinely travel the full Claude/Codex → MCP adapter →
-  Companion Core → activity log path and return real state, but no video or
-  event trace is actually captured. A real implementation would have the
-  content script capture DOM/input events (or the companion capture the
-  window via `chrome.desktopCapture`) and stream them to disk from Companion
-  Core, keyed by the same start/stop calls — the wiring here decides where
-  that logic plugs in, no interface migration in this repo's protocol needed.
+- "Download video" (see Demoly integration above) is capped at ~30fps —
+  a headless Chromium frame-production limit on macOS, not fixable by
+  tuning capture settings.
 - `file://` pages are rejected (`UNSUPPORTED_PAGE`) — Chrome's Native
   Messaging pipeline is what's being exercised, and content scripts require
   `http(s)` origins to run reliably; serve local test content over HTTP.
