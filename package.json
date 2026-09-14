@@ -1,0 +1,20 @@
+{
+  "name": "browser-agent",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=@browser-agent/protocol && npm run build --workspace=@browser-agent/native-host && npm run build --workspace=@browser-agent/mcp-adapter && npm run build --workspace=@browser-agent/companion-core && npm run build:extension && npm run build:companion",
+    "build:extension": "npm run build --workspace=@browser-agent/extension",
+    "build:companion": "npm run build --workspace=@browser-agent/companion",
+    "dev:companion": "npm run build && npm run start --workspace=@browser-agent/companion",
+    "package:companion": "npm run build && npm run package --workspace=@browser-agent/companion"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.3"
+  }
+}

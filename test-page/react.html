@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Browser Agent Test Page (React)</title>
+    <style>
+      body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 16px; }
+      label { display: block; margin-top: 12px; font-weight: bold; }
+      input { width: 100%; padding: 6px; box-sizing: border-box; }
+      #result { margin-top: 16px; padding: 12px; background: #eef; border-radius: 6px; min-height: 1.2em; }
+    </style>
+  </head>
+  <body>
+    <h1>Browser Agent Test Page (React controlled input)</h1>
+    <div id="root"></div>
+
+    <!-- No build step: React + Babel standalone, loaded via CDN, for a
+         controlled-input regression test (native property setter + events
+         must trigger React's onChange, not just set the DOM value). -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+      function App() {
+        const [name, setName] = React.useState("");
+        const [submitted, setSubmitted] = React.useState(null);
+
+        return (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              setSubmitted(name);
+            }}
+          >
+            <label htmlFor="react-name">Name (controlled)</label>
+            <input
+              id="react-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Type here"
+            />
+            <button id="react-submit" type="submit">
+              Submit
+            </button>
+            <div id="result">{submitted !== null ? `Hello ${submitted}` : ""}</div>
+          </form>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>

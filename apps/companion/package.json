@@ -1,0 +1,20 @@
+{
+  "name": "@browser-agent/companion",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "electron .",
+    "package": "node package.js"
+  },
+  "dependencies": {
+    "@browser-agent/protocol": "0.1.0",
+    "@browser-agent/companion-core": "0.1.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "@electron/packager": "^18.3.5",
+    "@types/node": "^22.20.2"
+  }
+}

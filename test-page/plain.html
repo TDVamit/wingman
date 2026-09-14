@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Browser Agent Test Page (plain HTML)</title>
+    <style>
+      body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 16px; }
+      label { display: block; margin-top: 12px; font-weight: bold; }
+      input, textarea, select { width: 100%; padding: 6px; box-sizing: border-box; }
+      #result { margin-top: 16px; padding: 12px; background: #eef; border-radius: 6px; min-height: 1.2em; }
+      .spacer { height: 1400px; background: linear-gradient(#fff, #ddf); }
+      #bottom-marker { padding: 20px; background: #dfd; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <h1>Browser Agent Test Page</h1>
+
+    <form id="the-form">
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" placeholder="Your name" />
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" placeholder="you@example.com" />
+
+      <label for="message">Message</label>
+      <textarea id="message" name="message" rows="4" placeholder="Type something..."></textarea>
+
+      <label for="color">Favorite color</label>
+      <select id="color" name="color">
+        <option value="">-- choose --</option>
+        <option value="red">Red</option>
+        <option value="green">Green</option>
+        <option value="blue">Blue</option>
+      </select>
+
+      <label>
+        <input id="subscribe" name="subscribe" type="checkbox" style="width: auto; display: inline-block;" />
+        Subscribe to updates
+      </label>
+
+      <p><a id="test-link" href="https://example.com" target="_blank" rel="noopener">An external link</a></p>
+
+      <button id="submit-btn" type="submit">Submit</button>
+    </form>
+
+    <div id="result"></div>
+
+    <div class="spacer"></div>
+    <div id="bottom-marker">You scrolled to the bottom.</div>
+
+    <script>
+      document.getElementById("the-form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const name = document.getElementById("name").value;
+        document.getElementById("result").textContent = "Hello " + name;
+      });
+    </script>
+  </body>
+</html>

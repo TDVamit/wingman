@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Wingman</title>
+    <style>
+      :root {
+        --bg: #f4f7fc;
+        --bg-raised: #ffffff;
+        --border: #dbe3f0;
+        --text: #101828;
+        --text-dim: #536077;
+        --text-faint: #94a1b8;
+        --accent: #2563eb;
+        --ok: #16a34a;
+        --ok-bg: rgba(22, 163, 74, 0.1);
+        --bad: #e11d48;
+        --bad-bg: rgba(225, 29, 72, 0.1);
+      }
+      * { box-sizing: border-box; }
+      body {
+        width: 260px;
+        margin: 0;
+        padding: 14px;
+        font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        -webkit-font-smoothing: antialiased;
+      }
+      .head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+      .head img { width: 20px; height: 20px; flex-shrink: 0; border-radius: 5px; }
+      .head h1 { font-size: 13.5px; font-weight: 650; margin: 0; letter-spacing: -0.01em; flex: 1; }
+      .badge {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 8px;
+        border-radius: 999px;
+      }
+      .badge .dot { width: 6px; height: 6px; border-radius: 50%; }
+      .badge.ok { background: var(--ok-bg); color: var(--ok); }
+      .badge.ok .dot { background: var(--ok); }
+      .badge.bad { background: var(--bad-bg); color: var(--bad); }
+      .badge.bad .dot { background: var(--bad); }
+
+      .panel {
+        background: var(--bg-raised);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+      }
+      .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+      .row + .row { margin-top: 6px; }
+      .label { color: var(--text-faint); font-size: 11.5px; flex-shrink: 0; }
+      .val {
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 11.5px;
+        color: var(--text-dim);
+        text-align: right;
+      }
+
+      button {
+        width: 100%;
+        border: none;
+        padding: 9px 10px;
+        border-radius: 8px;
+        font: inherit;
+        font-weight: 650;
+        font-size: 13px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        transition: filter 0.12s ease, transform 0.05s ease;
+      }
+      button:hover { filter: brightness(1.08); }
+      button:active { transform: translateY(1px); }
+      button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      button:disabled { opacity: 0.4; cursor: default; filter: none; }
+      #btn-record { background: var(--accent); color: #fff; }
+      #btn-record.is-recording { background: var(--bad); color: #fff; }
+      #btn-record .rec-icon { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+      #btn-record.is-recording .rec-icon { border-radius: 2px; animation: pulse 1.6s ease-in-out infinite; }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+      #error {
+        display: none;
+        color: var(--bad);
+        background: var(--bad-bg);
+        border-radius: 7px;
+        padding: 7px 9px;
+        margin-top: 8px;
+        font-size: 11.5px;
+        line-height: 1.4;
+      }
+      #error.visible { display: block; }
+
+      footer { text-align: center; margin-top: 10px; }
+      footer span { color: var(--text-faint); font-size: 10.5px; }
+    </style>
+  </head>
+  <body>
+    <div class="head">
+      <img src="icons/icon48.png" alt="" />
+      <h1>Wingman</h1>
+      <span id="companion" class="badge">—</span>
+    </div>
+
+    <div class="panel">
+      <div class="row">
+        <span class="label">Current page</span>
+        <span id="page" class="val">—</span>
+      </div>
+    </div>
+
+    <button id="btn-record"><span class="rec-icon"></span><span id="btn-record-label">Start Recording</span></button>
+    <div id="error"></div>
+
+    <footer><span id="recording-hint">Captures clicks &amp; typing as a replay, not a video.</span></footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

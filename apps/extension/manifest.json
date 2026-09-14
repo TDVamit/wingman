@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Wingman",
+  "description": "Lets Claude Desktop and Codex observe and control this Chrome browser via the Wingman Companion app.",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwZ67yuy/kofB2BjbuS00CsYMUFckQ15GklPfXl4Gnn1lxxv6cqyLgBSiXEeRGF4zI37mEYQ7hOiPHv4hvQ4VTNBEOLUxPcVbFVJV430fH1o2EiVsNG6BdhSHth69+acIlAvFtb9HtlIL8RnvF3ewFz8FqgHA8uaFxhTSqwEeZsJt+/JAWSC5nhfEg1gEaMeEENoXAIh7MATIS4SnhscdhcNXcfnZHTL/jMVPG4l02nfAyjWfiZbgKNiuSCER0YFVmH25+UcE/XUoGu04KbsoZ6G0VogJ6HE+kO8asvWOO/eQjZI1OXCCNCSfnalsh56yI0bksh+C8TccHd1k9GVJrwIDAQAB",
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
+  "permissions": ["activeTab", "tabs", "scripting", "nativeMessaging", "storage", "windows"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    { "matches": ["https://app.demoly.dev/*"], "js": ["demoly-handshake.js"], "run_at": "document_start" },
+    { "matches": ["https://app.demoly.dev/*", "http://127.0.0.1:47811/*", "file:///*"], "js": ["replay-detect.js"], "run_at": "document_idle" }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@browser-agent/mcp-adapter",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "bin": {
+    "browser-agent-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@browser-agent/protocol": "0.1.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.6.4"
+  }
+}

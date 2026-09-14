@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Wingman Companion</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div class="topbar">
+        <img class="mark" src="logo.png" alt="" />
+        <div class="titles">
+          <h1>Wingman</h1>
+          <p class="subtitle">Browser automation companion</p>
+        </div>
+        <div class="global-status">
+          <span id="global-dot" class="dot"></span>
+          <span id="global-text">Checking…</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Connections</h2>
+          <span class="panel-count" id="conn-count">-</span>
+        </div>
+
+        <div class="conn-row" id="row-ext">
+          <div class="icon-badge"><img class="brand-icon" src="icons/chrome.svg" alt="" /></div>
+          <div class="row-top">
+            <div class="name">Chrome Extension</div>
+            <span id="ext-status" class="status-chip">-</span>
+          </div>
+          <div class="row-bottom">
+            <p class="hint" id="ext-hint"></p>
+            <div class="actions"><button id="btn-install-ext" class="btn secondary">Install</button></div>
+          </div>
+        </div>
+
+        <div class="conn-row" id="row-claude">
+          <div class="icon-badge"><img class="brand-icon" src="icons/claude.svg" alt="" /></div>
+          <div class="row-top">
+            <div class="name">Claude Desktop</div>
+            <span id="claude-integration" class="status-chip">-</span>
+          </div>
+          <div class="row-bottom">
+            <p class="hint" id="claude-hint"></p>
+            <div class="actions">
+              <button id="btn-connect-claude" class="btn">Connect</button>
+              <button id="btn-disconnect-claude" class="btn danger-ghost">Disconnect</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="conn-row" id="row-codex">
+          <div class="icon-badge"><img class="brand-icon" src="icons/codex.svg" alt="" /></div>
+          <div class="row-top">
+            <div class="name">Codex</div>
+            <span id="codex-integration" class="status-chip">-</span>
+          </div>
+          <div class="row-bottom">
+            <p class="hint" id="codex-hint"></p>
+            <div class="actions">
+              <button id="btn-connect-codex" class="btn">Connect</button>
+              <button id="btn-disconnect-codex" class="btn danger-ghost">Disconnect</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="activity-panel" style="display: none">
+        <div class="panel-head">
+          <h2>Activity</h2>
+        </div>
+        <div id="activity-list"></div>
+      </div>
+
+      <footer>
+        <span class="version">Wingman v0.1.0</span>
+        <span class="sep">·</span>
+        <button id="btn-open-logs" class="link">Diagnostics: Open Logs</button>
+      </footer>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
