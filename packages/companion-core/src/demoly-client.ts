@@ -69,6 +69,33 @@ async function apiFetch(auth: DemolyAuth, path_: string, init: RequestInit = {})
   return doFetch(refreshed);
 }
 
+// Every open replay tab's "Upload to Demoly" panel calls listWorkspaces/
+// listProjects on load with no coordination between tabs -- several
+// recordings open at once (a normal thing to do while reviewing a session)
+// turns into that many simultaneous hits on Demoly's real API, which is
+// what a 429 there actually means. These barely change within a browsing
+// session, so a short TTL cache here lets N open tabs share one upstream
+// call instead of each tab causing its own.
+const CACHE_TTL_MS = 30_000;
+const cache = new Map<string, { at: number; value: unknown; inFlight?: Promise<unknown> }>();
+
+async function cached<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+  const entry = cache.get(key);
+  if (entry && Date.now() - entry.at < CACHE_TTL_MS) return entry.value as T;
+  if (entry?.inFlight) return entry.inFlight as Promise<T>;
+  const promise = fetcher()
+    .then((value) => {
+      cache.set(key, { at: Date.now(), value });
+      return value;
+    })
+    .catch((err) => {
+      cache.delete(key);
+      throw err;
+    });
+  cache.set(key, { at: entry?.at ?? 0, value: entry?.value, inFlight: promise });
+  return promise;
+}
+
 export const demolyClient = {
   isConnected(): boolean {
     return load() !== null;
@@ -93,14 +120,17 @@ export const demolyClient = {
       workspaceId: data.organization?._id ?? data.organization?.id ?? existing?.workspaceId,
       projectId: existing?.projectId ?? null,
     });
+    cache.clear(); // a fresh handshake can be a different account/workspace entirely
   },
 
   async listWorkspaces(): Promise<Array<{ id: string; name: string }>> {
-    const auth = requireAuth();
-    const res = await apiFetch(auth, "/auth/org");
-    if (!res.ok) throw new Error(`Failed to list workspaces (${res.status})`);
-    const data = (await res.json()) as Array<{ _id?: string; id?: string; name: string }>;
-    return data.map((o) => ({ id: o._id ?? o.id ?? "", name: o.name }));
+    return cached("workspaces", async () => {
+      const auth = requireAuth();
+      const res = await apiFetch(auth, "/auth/org");
+      if (!res.ok) throw new Error(`Failed to list workspaces (${res.status})`);
+      const data = (await res.json()) as Array<{ _id?: string; id?: string; name: string }>;
+      return data.map((o) => ({ id: o._id ?? o.id ?? "", name: o.name }));
+    });
   },
 
   async setWorkspace(organizationId: string): Promise<void> {
@@ -113,14 +143,17 @@ export const demolyClient = {
     if (!res.ok) throw new Error(`Failed to switch workspace (${res.status})`);
     const data = (await res.json()) as { accessToken?: string; token?: string; refreshToken?: string };
     save({ ...auth, accessToken: data.accessToken ?? data.token ?? auth.accessToken, refreshToken: data.refreshToken ?? auth.refreshToken, workspaceId: organizationId });
+    cache.delete("projects"); // project list is scoped to the current workspace
   },
 
   async listProjects(): Promise<Array<{ id: string; name: string }>> {
-    const auth = requireAuth();
-    const res = await apiFetch(auth, "/projects");
-    if (!res.ok) throw new Error(`Failed to list projects (${res.status})`);
-    const data = (await res.json()) as { projects?: Array<{ id: string; name: string }> };
-    return data.projects ?? [];
+    return cached("projects", async () => {
+      const auth = requireAuth();
+      const res = await apiFetch(auth, "/projects");
+      if (!res.ok) throw new Error(`Failed to list projects (${res.status})`);
+      const data = (await res.json()) as { projects?: Array<{ id: string; name: string }> };
+      return data.projects ?? [];
+    });
   },
 
   setProject(projectId: string | null): void {

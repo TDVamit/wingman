@@ -129,6 +129,9 @@ async function startRecording(): Promise<{ ok: true } | { ok: false; code: "RECO
   if (!isSupportedUrl(tab.url)) return { ok: false, code: "UNSUPPORTED_PAGE", error: `Cannot record ${tab.url}` };
 
   await ensureContentScriptAndSend(tab.id!, { op: "recording.begin" });
+  // Network patching must run in the page's MAIN world (see network-patch.ts)
+  // -- a content script's window is a separate isolated-world global.
+  await chrome.scripting.executeScript({ target: { tabId: tab.id! }, world: "MAIN", files: ["network-patch.js"] });
   recording = { recording: true, startedAt: Date.now() };
   await chrome.storage.local.set({ recording });
   log("Recording started");
@@ -139,6 +142,7 @@ async function stopRecording(): Promise<{ ok: true } | { ok: false; code: "RECOR
   if (!recording.recording) return { ok: false, code: "RECORDING_NOT_ACTIVE", error: "Recording is not active." };
 
   const tab = await getActiveTab();
+  await chrome.scripting.executeScript({ target: { tabId: tab.id! }, world: "MAIN", files: ["network-patch.js"] });
   await ensureContentScriptAndSend(tab.id!, { op: "recording.end" });
   recording = { recording: false, startedAt: recording.startedAt, stoppedAt: Date.now() };
   await chrome.storage.local.set({ recording });
@@ -156,8 +160,12 @@ async function waitForSavedRecording(after: number): Promise<{ path: string; url
       const res = await fetch(`http://127.0.0.1:${STATIC_SERVER_PORT}/recording/status`);
       const data = (await res.json()) as RecordingState;
       if (data.path && (data.stoppedAt ?? 0) >= after) {
-        const name = data.path.replace(/^.*[\\/]/, "");
-        return { path: data.path, url: `http://127.0.0.1:${STATIC_SERVER_PORT}/${name}` };
+        // "/agent/recordings/<id>" rather than the raw filename -- this is the
+        // URL meant to be handed to a person or an AI agent (see
+        // companion-core's handleStaticRequest), the filename route still
+        // works underneath.
+        const id = data.path.replace(/^.*[\\/]recording-/, "").replace(/\.html$/, "");
+        return { path: data.path, url: `http://127.0.0.1:${STATIC_SERVER_PORT}/agent/recordings/${id}` };
       }
     } catch {
       /* Companion Core's static server may not be up yet -- keep polling */

@@ -29,6 +29,7 @@ import {
 } from "@browser-agent/protocol";
 import { appSupportDir, socketPath } from "@browser-agent/protocol/dist/paths";
 import { demolyClient } from "./demoly-client";
+import { buildAgentData, diffStates, searchAgentData, summarizeStateChange, renderHtmlAtOffset, type AgentData, type AgentAction, type RrwebEvent } from "./agent-pipeline";
 
 interface PendingRequest {
   respondToSocket: net.Socket;
@@ -72,14 +73,14 @@ const MAX_KEPT_RECORDINGS = 20;
 function pruneOldRecordings(dir: string): void {
   const groups = new Map<string, number>(); // timestamp id -> newest mtime among its files
   for (const name of fs.readdirSync(dir)) {
-    const m = name.match(/^recording-(\d+)\.(html|json|webm|mp4)$/);
+    const m = name.match(/^recording-(\d+)\.(html|json|webm|mp4|agent\.json)$/);
     if (!m) continue;
     const mtime = fs.statSync(path.join(dir, name)).mtimeMs;
     groups.set(m[1], Math.max(groups.get(m[1]) ?? 0, mtime));
   }
   const ids = [...groups.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
   for (const id of ids.slice(MAX_KEPT_RECORDINGS)) {
-    for (const ext of ["html", "json", "webm", "mp4"]) {
+    for (const ext of ["html", "json", "agent.json", "webm", "mp4"]) {
       fs.rmSync(path.join(dir, `recording-${id}.${ext}`), { force: true });
     }
   }
@@ -123,31 +124,286 @@ function compressInactiveGaps<T extends { timestamp?: number }>(events: T[], thr
   });
 }
 
+// Custom events (see content-script.ts's addCustomEvent("wingman-comment", ...))
+// carry the AI's stated reason for a click/type/etc -- the only "semantic
+// action" data Wingman has, since it only exists when an MCP tool call
+// passed a `comment`. A recording started by clicking the extension's
+// record button directly has none, same as a raw Demoly recording; that's
+// an accurate empty list, not a bug.
+function extractActions(events: unknown[]): Array<{ id: string; offsetMs: number; type: string; text: string }> {
+  const startTime = (events[0] as { timestamp?: number } | undefined)?.timestamp ?? 0;
+  return (events as Array<{ type?: number; timestamp?: number; data?: { tag?: string; payload?: { text?: string; action?: string } } }>)
+    .filter((e) => e.type === 5 && e.data?.tag === "wingman-comment")
+    .map((e, i) => ({
+      id: `act_${i}`,
+      offsetMs: (e.timestamp ?? startTime) - startTime,
+      type: e.data?.payload?.action ?? "unknown",
+      text: e.data?.payload?.text ?? "",
+    }));
+}
+
+// Lightweight, text-first HTML for the /agent/recordings/:id/* agent-gateway routes below.
+// A generic browser agent (Claude opening the recording URL in a real
+// browser tab, no MCP, no hand-built API calls) can just read these pages
+// the way it reads any webpage -- same underlying agent.json data as the
+// /api/agent/* JSON routes, rendered for reading instead of parsing.
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+function fmtTs(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function textPage(title: string, bodyHtml: string): string {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow"><title>${escapeHtml(title)}</title>
+<style>body{background:#0b0f19;color:#d7deed;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13px;line-height:1.7;padding:28px;max-width:820px;white-space:pre-wrap}
+a{color:#6ea8fe;text-decoration:none}a:hover{text-decoration:underline}
+h1{font-size:15px;color:#fff;white-space:normal}.dim{color:#8a94a6}.hl{color:#fff}</style>
+</head><body>${bodyHtml}</body></html>`;
+}
+
+// Fully-qualified (not page-relative) links, so this same markup works whichever page it's
+// rendered on: the /actions sub-page, or inlined directly into the main replay page.
+function actionLine(base: string, rid: string, id: string, prevId: string | undefined, a: AgentAction, resultLine: string): string {
+  const val = a.value !== undefined ? ` "${escapeHtml(a.value)}"` : "";
+  const intent = a.intent ? `\nINTENT: ${escapeHtml(a.intent)}` : "";
+  const stateUrl = `${base}/agent/recordings/${rid}/state?action=${id}`;
+  const renderUrl = `${base}/agent/recordings/${rid}/render?action=${id}`;
+  const diffLink = prevId
+    ? `\nDIFF FROM PREVIOUS: <a href="${base}/agent/recordings/${rid}/diff?before=${prevId}&after=${id}">${base}/agent/recordings/${rid}/diff?before=${prevId}&after=${id}</a>`
+    : "";
+  return (
+    `[${fmtTs(a.offsetMs)}] ${id} -- <a href="${stateUrl}">${stateUrl}</a> (or <a href="${renderUrl}">rendered HTML</a>)\n` +
+    `TYPE: ${a.type}\nTARGET: ${escapeHtml(a.target.role)} "${escapeHtml(a.target.label)}"${val}${intent}` +
+    (resultLine ? `\nRESULT: ${escapeHtml(resultLine)}` : "") +
+    diffLink
+  );
+}
+
+// Discoverable navigation target for an arbitrary timestamp (rather than one of the
+// fixed action ids above) -- a real GET <form>, per the "form/citation object the
+// tool's own browsing layer submits" pattern: an agent that won't construct or edit a
+// URL itself can still fill in and submit a form field.
+function timestampForm(base: string, id: string): string {
+  return (
+    `<form action="${base}/agent/recordings/${id}/render" method="get">` +
+    `State at timestamp (seconds): <input name="t" type="number" step="0.001"> <button type="submit">Get rendered HTML</button></form>` +
+    `<span class="dim">(same "t" param works on <a href="${base}/agent/recordings/${id}/state?t=0">/state?t=SECONDS</a> for the text version)</span>`
+  );
+}
+
+function actionsBody(base: string, id: string, data: AgentData): string {
+  const blocks = data.actions.map((a, i) =>
+    actionLine(base, id, a.id, data.actions[i - 1]?.id, a, summarizeStateChange(data.states[data.actions[i - 1]?.id], data.states[a.id])),
+  );
+  return (
+    `<h1>Recording ${escapeHtml(id)} -- Actions</h1>\n` +
+    `<span class="dim">${data.actions.length} actions. Click an id's state link, or open <a href="${base}/agent/recordings/${id}/search?q=...">${base}/agent/recordings/${id}/search?q=...</a> to search.</span>\n\n` +
+    (blocks.length ? blocks.join("\n\n") : "<span class=\"dim\">No actions recorded.</span>") +
+    `\n\n${timestampForm(base, id)}`
+  );
+}
+
+function renderActionsHtml(base: string, id: string, data: AgentData): string {
+  return textPage(`Recording ${id} -- Actions`, actionsBody(base, id, data));
+}
+
+// Resolves either query style an agent might use: an exact ?action=ACTION_ID,
+// or ?t=SECONDS (picks the action closest to that offset) -- see agentLinks'
+// "Rendered HTML state" form, which lets an agent submit an arbitrary
+// timestamp without having to construct/modify a URL itself.
+function resolveActionByQuery(data: AgentData, url: URL): AgentAction | null {
+  const actionId = url.searchParams.get("action");
+  if (actionId) return data.actions.find((a) => a.id === actionId) ?? null;
+  const t = url.searchParams.get("t");
+  if (t === null) return null;
+  const targetMs = Number(t) * 1000;
+  if (Number.isNaN(targetMs) || data.actions.length === 0) return null;
+  return data.actions.reduce((best, a) => (Math.abs(a.offsetMs - targetMs) < Math.abs(best.offsetMs - targetMs) ? a : best));
+}
+
+function renderStateHtml(id: string, data: AgentData, action: AgentAction | null): string {
+  if (!action) return textPage("State", `<span class="dim">Pass ?action=ACTION_ID or ?t=SECONDS (see <a href="/agent/recordings/${id}/actions">/agent/recordings/${id}/actions</a>).</span>`);
+  const actionId = action.id;
+  const state = data.states[actionId];
+  if (!state) return textPage("State", `<span class="dim">Unknown action id "${escapeHtml(actionId)}".</span>`);
+  const list = (label: string, items: string[]) => (items.length ? `${label}:\n${items.map((i) => `  - ${escapeHtml(i)}`).join("\n")}` : `${label}: (none visible)`);
+  const inputs = state.inputs.map((i) => `${i.label} = "${i.value}"`);
+  const tables = state.tables.map((t) => `${t.headers.join(", ") || "table"} (${t.rows} rows)`);
+  const body =
+    `<h1>Recording ${escapeHtml(id)} -- Screen state at ${actionId} [${fmtTs(action.offsetMs)}]</h1>\n\n` +
+    `Target: ${escapeHtml(action.target.role)} "${escapeHtml(action.target.label)}"\n\n` +
+    [list("Headings", state.headings), list("Buttons", state.buttons), list("Inputs", inputs), list("Tables", tables)].join("\n\n");
+  return textPage("State", body);
+}
+
+function renderDiffHtml(id: string, data: AgentData, beforeId: string | null, afterId: string | null): string {
+  const before = beforeId ? data.states[beforeId] : undefined;
+  const after = afterId ? data.states[afterId] : undefined;
+  if (!before || !after)
+    return textPage("Diff", `<span class="dim">Pass ?before=ACTION_ID&after=ACTION_ID (see <a href="/agent/recordings/${id}/actions">/agent/recordings/${id}/actions</a>).</span>`);
+  const diff = diffStates(before, after);
+  const body =
+    `<h1>Recording ${escapeHtml(id)} -- Changes from ${beforeId} to ${afterId}</h1>\n\n` +
+    `Added:\n${diff.added.map((a) => `  + ${escapeHtml(a)}`).join("\n") || "  (none)"}\n\n` +
+    `Removed:\n${diff.removed.map((a) => `  - ${escapeHtml(a)}`).join("\n") || "  (none)"}\n\n` +
+    `Changed:\n${diff.changed.map((c) => `  ${escapeHtml(c.field)}: ${escapeHtml(c.before)} → ${escapeHtml(c.after)}`).join("\n") || "  (none)"}`;
+  return textPage("Diff", body);
+}
+
+function renderSearchHtml(id: string, data: AgentData, q: string): string {
+  const results = q ? searchAgentData(data, q) : [];
+  const body =
+    `<h1>Recording ${escapeHtml(id)} -- Search "${escapeHtml(q)}"</h1>\n\n` +
+    (results.length
+      ? results
+          .map((r) =>
+            r.id
+              ? `[${fmtTs(r.offsetMs)}] (${r.type}) <a href="/agent/recordings/${id}/state?action=${r.id}">${r.id}</a>: ${escapeHtml(r.match)}`
+              : `[${fmtTs(r.offsetMs)}] (${r.type}): ${escapeHtml(r.match)}`
+          )
+          .join("\n")
+      : `<span class="dim">No matches. Try <a href="/agent/recordings/${id}/actions">/agent/recordings/${id}/actions</a> instead.</span>`);
+  return textPage("Search", body);
+}
+
+function headersBlock(label: string, headers: Record<string, string> | undefined): string {
+  if (!headers || Object.keys(headers).length === 0) return "";
+  return `\n  ${label}:\n` + Object.entries(headers).map(([k, v]) => `    ${escapeHtml(k)}: ${escapeHtml(v)}`).join("\n");
+}
+
+function bodyBlock(label: string, body: string | undefined): string {
+  return body ? `\n  ${label}: ${escapeHtml(body)}` : "";
+}
+
+function renderNetworkHtml(id: string, data: AgentData): string {
+  const rows = data.network.map(
+    (n) =>
+      `[${fmtTs(n.offsetMs)}] ${n.method} ${n.status || "ERR"} (${n.durationMs}ms) ${escapeHtml(n.url)}` +
+      headersBlock("Request headers", n.requestHeaders) +
+      bodyBlock("Request body", n.requestBody) +
+      headersBlock("Response headers", n.responseHeaders) +
+      bodyBlock("Response body", n.responseBody)
+  );
+  const body =
+    `<h1>Recording ${escapeHtml(id)} -- Network</h1>\n` +
+    `<span class="dim">${data.network.length} requests captured (fetch/XHR method, url, status, duration, headers, and bodies up to 2000 chars -- larger/non-text bodies are dropped, not truncated).</span>\n\n` +
+    (rows.length ? rows.join("\n\n") : "<span class=\"dim\">No network requests captured for this recording.</span>");
+  return textPage(`Recording ${id} -- Network`, body);
+}
+
+// Baked into saved replay .html files at write time, when the eventual request host
+// (localhost vs. a tunnel like trycloudflare.com) isn't known yet -- swapped for the
+// real origin in handleStaticRequest when the file is served, so the same saved file
+// works whether opened locally or through a tunnel.
+const AGENT_BASE_PLACEHOLDER = "__WINGMAN_AGENT_BASE__";
+
+// Swapped at serve time for the actual action list (see resolveReplayHtml), so a fetch tool
+// that won't or can't hop to a second URL still gets the full actions data from the one
+// recording URL a human hands it -- no navigation required at all.
+const AGENT_ACTIONS_PLACEHOLDER = "__WINGMAN_AGENT_ACTIONS__";
+
+function originFromReq(req: http.IncomingMessage): string {
+  const proto = req.headers["x-forwarded-proto"] ?? "http";
+  const host = req.headers.host ?? `127.0.0.1:${STATIC_SERVER_PORT}`;
+  return `${proto}://${host}`;
+}
+
+// Resolves both serve-time placeholders in a saved replay .html file: the request's real
+// origin, and (for recording-<id>.html specifically) the actual action list once it's been
+// extracted -- inlined directly rather than left as a link, per the reasoning above.
+function resolveReplayHtml(dir: string, fileName: string, html: string, req: http.IncomingMessage): string {
+  const origin = originFromReq(req);
+  let out = html.replaceAll(AGENT_BASE_PLACEHOLDER, origin);
+  const idMatch = fileName.match(/^recording-(\d+)\.html$/);
+  if (idMatch && out.includes(AGENT_ACTIONS_PLACEHOLDER)) {
+    const id = idMatch[1];
+    const agentPath = path.join(dir, `recording-${id}.agent.json`);
+    const actionsText = fs.existsSync(agentPath)
+      ? actionsBody(origin, id, JSON.parse(fs.readFileSync(agentPath, "utf8")) as AgentData)
+      : `<span class="dim">Still extracting actions/state for this recording -- reload in a few seconds, or fetch ${origin}/agent/recordings/${id}/actions directly.</span>`;
+    out = out.replaceAll(AGENT_ACTIONS_PLACEHOLDER, actionsText);
+  }
+  return out;
+}
+
+// One list of (label, url) pairs so the plain-text agents.txt response and the HTML copy
+// embedded in the replay page (below, as real <a href> elements -- a fetch tool that won't
+// follow a URL it only saw as page text will often still follow one it discovered as an
+// actual anchor tag, since that's the tool's own DOM scan rather than a value the model
+// parsed out of prose) can't drift apart.
+function agentLinks(id: string, base: string): Array<{ label: string; url: string }> {
+  return [
+    { label: "Read first", url: `${base}/agent/recordings/${id}/actions` },
+    { label: "Search", url: `${base}/agent/recordings/${id}/search?q=...` },
+    { label: "State (only when needed)", url: `${base}/agent/recordings/${id}/state?action=ACTION_ID` },
+    { label: "Rendered HTML state (only when needed)", url: `${base}/agent/recordings/${id}/render?action=ACTION_ID` },
+    { label: "Diff (only when needed)", url: `${base}/agent/recordings/${id}/diff?before=ACTION_ID&after=ACTION_ID` },
+    { label: "Network requests (fetch/XHR captured during recording)", url: `${base}/agent/recordings/${id}/network` },
+    { label: "JSON equivalent (for scripted access)", url: `${base}/api/agent/recordings/${id}` },
+    { label: "JSON action range (for long recordings)", url: `${base}/api/agent/recordings/${id}/range?from=&to=` },
+  ];
+}
+
+function agentInstructionsPreamble(durationSec: number): string {
+  return `This recording is ${durationSec.toFixed(0)}s long. Actions/screen-state finish processing a few seconds after saving -- if a link below says "processing", reload it shortly.`;
+}
+
+const AGENT_INSTRUCTIONS_FOOTER =
+  "If the Wingman MCP server is already configured in your environment, its recording_*/browser_* tools may be used instead -- MCP is optional, these links work without it.";
+
+// Plain-text version, served standalone at /agent/recordings/:id/agents.txt.
+function agentInstructionsText(id: string, durationSec: number, base: string): string {
+  const links = agentLinks(id, base).map((l) => `${l.label}: ${l.url}`).join("\n");
+  return `${agentInstructionsPreamble(durationSec)}\n\n${links}\n\n${AGENT_INSTRUCTIONS_FOOTER}`;
+}
+
+// HTML version with real <a href> elements, embedded (unescaped) in the replay page.
+function agentInstructionsHtml(id: string, durationSec: number, base: string): string {
+  const links = agentLinks(id, base)
+    .map((l) => `${escapeHtml(l.label)}: <a href="${escapeHtml(l.url)}">${escapeHtml(l.url)}</a>`)
+    .join("\n");
+  return `${escapeHtml(agentInstructionsPreamble(durationSec))}\n\n${links}\n\n${escapeHtml(AGENT_INSTRUCTIONS_FOOTER)}`;
+}
+
 function renderReplayHtml(events: unknown[], fileName: string): string {
   const { js, css } = playerAssets();
   // Defends against a "</script>" substring inside the (untrusted, page-
   // sourced) recorded events prematurely closing the inline script tag.
   const eventsJson = JSON.stringify(events).replace(/<\/script/gi, "<\\/script");
 
-  // Custom events (see content-script.ts's addCustomEvent("wingman-comment", ...))
-  // carry the AI's stated reason for a click/type/etc; pulled out here so the
-  // replay page can list them in a sidebar next to when they happened,
-  // instead of them only existing invisibly inside the rrweb event stream.
-  const startTime = (events[0] as { timestamp?: number } | undefined)?.timestamp ?? 0;
-  const comments = (events as Array<{ type?: number; timestamp?: number; data?: { tag?: string; payload?: { text?: string; action?: string } } }>)
-    .filter((e) => e.type === 5 && e.data?.tag === "wingman-comment")
-    .map((e) => ({
-      offsetMs: (e.timestamp ?? startTime) - startTime,
-      text: e.data?.payload?.text ?? "",
-      action: e.data?.payload?.action ?? "",
-    }));
+  const actions = extractActions(events);
+  const comments = actions.map((a) => ({ offsetMs: a.offsetMs, text: a.text, action: a.type }));
   const commentsJson = JSON.stringify(comments);
+
+  // Recording id = the timestamp in "recording-<id>.html", used for the
+  // hosted-style /agent/recordings/:id URL and the agent API below (see
+  // "Demoly Agent-Readable Recording Specification": the recording URL as
+  // the universal entry point, with a server-rendered discovery block
+  // rather than an aggressive/injected instruction).
+  const id = fileName.replace(/^recording-/, "").replace(/\.html$/, "");
+  const agentApiUrl = `${AGENT_BASE_PLACEHOLDER}/api/agent/recordings/${id}`;
+  const firstTs = (events[0] as { timestamp?: number } | undefined)?.timestamp ?? 0;
+  const lastTs = (events[events.length - 1] as { timestamp?: number } | undefined)?.timestamp ?? firstTs;
+  const durationSec = (lastTs - firstTs) / 1000;
+  // Declarative (no "IGNORE PREVIOUS INSTRUCTIONS"-style injection)
+  // instructions for a generic browser agent that opens this page in a real
+  // tab -- present in the page source (readable via read_page/view-source)
+  // but not rendered visibly, since it's not meant for the human viewer.
+  // A "Copy for AI" button lets a human hand the same text to an agent
+  // manually. See agents.txt route for the identical content served as a
+  // standalone plain-text resource. AGENT_BASE_PLACEHOLDER is resolved to the
+  // real request origin when the saved file is served (see handleStaticRequest).
+  const agentInstructions = agentInstructionsHtml(id, durationSec, AGENT_BASE_PLACEHOLDER);
 
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <title>Wingman recording replay</title>
+<meta name="wingman:agent-api" content="${agentApiUrl}">
 <style>${css}</style>
 <style>
 :root{
@@ -179,6 +435,9 @@ body{margin:0;background:var(--bg);display:flex;min-height:100vh;font-family:-ap
 #demoly-msg{font-size:12px;color:var(--text-dim);word-break:break-all;line-height:1.4;min-height:1.4em;}
 #demoly-msg.error{color:var(--bad);}
 #demoly-msg a{color:var(--accent);}
+#agent{border-top:1px solid var(--border);padding:12px;}
+#agent button{width:100%;box-sizing:border-box;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:7px 8px;font-size:12.5px;font-family:inherit;cursor:pointer;}
+#agent button:hover{background:var(--bg-raised-2);}
 </style>
 </head>
 <body>
@@ -193,11 +452,17 @@ body{margin:0;background:var(--bg);display:flex;min-height:100vh;font-family:-ap
 <button id="demoly-upload-btn" disabled>Upload to Demoly</button>
 <div id="demoly-msg"></div>
 </div>
+<div id="agent">
+<button id="copy-for-ai-btn" type="button">Copy for AI</button>
 </div>
+</div>
+<pre id="agent-instructions" style="display:none">${agentInstructions}</pre>
+<pre id="agent-actions" style="display:none">${AGENT_ACTIONS_PLACEHOLDER}</pre>
 </div>
 <script>${js}</script>
 <script>
 const RECORDING_FILE = ${JSON.stringify(fileName)};
+const RECORDING_ID = ${JSON.stringify(id)};
 const DEMOLY_API = "http://127.0.0.1:${STATIC_SERVER_PORT}/demoly";
 const comments = ${commentsJson};
 const player = new (rrwebPlayer.default || rrwebPlayer)({ target: document.getElementById("player"), props: { events: ${eventsJson}, mouseTail: false, skipInactive: true, inactivePeriodThreshold: 3000, maxSpeed: 720 } });
@@ -232,6 +497,15 @@ player.addEventListener("ui-update-current-time", (e) => {
   }
 });
 
+const copyForAiBtn = document.getElementById("copy-for-ai-btn");
+copyForAiBtn.addEventListener("click", () => {
+  const text = window.location.origin + "/agent/recordings/" + RECORDING_ID;
+  navigator.clipboard.writeText(text).then(() => {
+    copyForAiBtn.textContent = "Copied";
+    setTimeout(() => (copyForAiBtn.textContent = "Copy for AI"), 1500);
+  });
+});
+
 // Talks to Companion Core's own local server (a fixed 127.0.0.1 port -- this
 // page is opened as file://, so it's cross-origin and relies on
 // handleStaticRequest sending CORS headers), which in turn talks to Demoly
@@ -246,23 +520,32 @@ function showMsg(text, isError) {
   msgEl.className = isError ? "error" : "";
 }
 
+// Companion Core's own /demoly/* routes proxy to Demoly and relay its error
+// body as {error} with a non-2xx status (see handleStaticRequest) -- reading
+// that field is the only way to see e.g. a rate limit ("429") instead of a
+// generic "Cannot read properties of undefined" from blindly destructuring
+// an error body as if it were the success shape.
+async function fetchJson(url) {
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data && data.error ? data.error : \`\${res.status} \${res.statusText}\`);
+  return data;
+}
+
 async function loadDemolyPanel() {
   workspaceEl.disabled = true;
   projectEl.disabled = true;
   uploadBtn.disabled = true;
   showMsg("Loading Demoly workspaces…", false);
   try {
-    const status = await fetch(DEMOLY_API + "/status").then((r) => r.json());
+    const status = await fetchJson(DEMOLY_API + "/status");
     if (!status.connected) {
       workspaceEl.innerHTML = '<option value="">Not connected</option>';
       showMsg("Log into app.demoly.dev in a normal tab (with Wingman installed) to connect.", false);
       return;
     }
 
-    const [{ workspaces }, { projects }] = await Promise.all([
-      fetch(DEMOLY_API + "/workspaces").then((r) => r.json()),
-      fetch(DEMOLY_API + "/projects").then((r) => r.json()),
-    ]);
+    const [{ workspaces }, { projects }] = await Promise.all([fetchJson(DEMOLY_API + "/workspaces"), fetchJson(DEMOLY_API + "/projects")]);
 
     workspaceEl.innerHTML = workspaces.map((w) => \`<option value="\${w.id}"\${w.id === status.workspaceId ? " selected" : ""}>\${w.name}</option>\`).join("");
     projectEl.innerHTML =
@@ -273,7 +556,7 @@ async function loadDemolyPanel() {
     uploadBtn.disabled = false;
     showMsg("", false);
   } catch (err) {
-    showMsg("Could not reach Companion Core at " + DEMOLY_API + ": " + (err && err.message ? err.message : err), true);
+    showMsg("Could not reach Demoly: " + (err && err.message ? err.message : err), true);
   }
 }
 
@@ -515,6 +798,14 @@ export class CompanionCore extends EventEmitter {
       this.recording = { ...this.recording, path: filePath, stoppedAt: Date.now() };
       this.recordActivity("unknown", "recording.saved", "success", filePath);
       this.emit("status");
+      // Fire-and-forget: the deterministic actions/state pipeline (headless
+      // Chromium + the real rrweb Replayer, see agent-pipeline.ts) runs
+      // after the reply's already gone out, so it never delays saving the
+      // recording itself. Until it finishes, the agent API just reports the
+      // recording as still processing (see handleStaticRequest).
+      buildAgentData(events as RrwebEvent[])
+        .then((data) => fs.writeFileSync(filePath.replace(/\.html$/, ".agent.json"), JSON.stringify(data)))
+        .catch((err) => this.recordActivity("unknown", "recording.agentData", "error", String((err as Error)?.message ?? err)));
       return;
     }
     this.emit("status");
@@ -773,6 +1064,173 @@ export class CompanionCore extends EventEmitter {
       return;
     }
 
+    // Hosted-style recording URL (spec section 3) -- an alias for the plain
+    // filename route below, so a recording can be handed out as
+    // "/agent/recordings/<id>" the way a real hosted app would, instead of a
+    // raw filename.
+    const rMatch = url.pathname.match(/^\/agent\/recordings\/(\d+)$/);
+    if (rMatch && req.method === "GET") {
+      const fileName = `recording-${rMatch[1]}.html`;
+      fs.readFile(path.join(dir, fileName), "utf8", (err, data) => {
+        if (err) return void res.writeHead(404).end();
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(resolveReplayHtml(dir, fileName, data, req));
+      });
+      return;
+    }
+
+    // Standalone plain-text agent instructions -- same wording as the hidden
+    // block embedded in the replay page, served on its own so an agent can
+    // fetch it directly instead of parsing HTML.
+    const agentsTxtMatch = url.pathname.match(/^\/agent\/recordings\/(\d+)\/agents\.txt$/);
+    if (agentsTxtMatch && req.method === "GET") {
+      const [, id] = agentsTxtMatch;
+      const jsonPath = path.join(dir, `recording-${id}.json`);
+      if (!fs.existsSync(jsonPath)) return void res.writeHead(404).end("Recording not found");
+      const events = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as Array<{ timestamp?: number }>;
+      const first = events[0]?.timestamp ?? 0;
+      const last = events[events.length - 1]?.timestamp ?? first;
+      res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" }).end(agentInstructionsText(id, (last - first) / 1000, originFromReq(req)));
+      return;
+    }
+
+    // Agent gateway (browser-first, no MCP/JSON-client needed): the same
+    // agent.json data as /api/agent/* below, rendered as plain readable HTML
+    // so a generic browser agent (e.g. Claude just opening the recording URL
+    // in a real tab) can navigate it like any other webpage instead of
+    // constructing API calls by hand.
+    const rSubMatch = url.pathname.match(/^\/agent\/recordings\/(\d+)\/(actions|state|diff|search|network)$/);
+    if (rSubMatch && req.method === "GET") {
+      const [, id, sub] = rSubMatch;
+      const agentPath = path.join(dir, `recording-${id}.agent.json`);
+      if (!fs.existsSync(path.join(dir, `recording-${id}.json`))) return void res.writeHead(404).end("Recording not found");
+      if (!fs.existsSync(agentPath))
+        return void res.writeHead(202, { "Content-Type": "text/html; charset=utf-8" }).end(textPage("Processing", "<span class=\"dim\">Still extracting actions/state for this recording -- reload in a few seconds.</span>"));
+
+      const data = JSON.parse(fs.readFileSync(agentPath, "utf8")) as AgentData;
+      const html =
+        sub === "actions"
+          ? renderActionsHtml(originFromReq(req), id, data)
+          : sub === "state"
+            ? renderStateHtml(id, data, resolveActionByQuery(data, url))
+            : sub === "diff"
+              ? renderDiffHtml(id, data, url.searchParams.get("before"), url.searchParams.get("after"))
+              : sub === "network"
+                ? renderNetworkHtml(id, data)
+                : renderSearchHtml(id, data, url.searchParams.get("q") ?? "");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(html);
+      return;
+    }
+
+    // Rendered-HTML counterpart to /state above: instead of a text summary,
+    // hands back the actual reconstructed DOM at a timestamp -- for an agent
+    // that wants to look at the real screen. Same ?action=/?t= query as
+    // /state (see resolveActionByQuery), but this one isn't precomputed --
+    // it replays the raw event stream on demand (see renderHtmlAtOffset),
+    // so it only costs a headless-Chromium pass when actually requested.
+    const renderMatch = url.pathname.match(/^\/agent\/recordings\/(\d+)\/render$/);
+    if (renderMatch && req.method === "GET") {
+      const [, id] = renderMatch;
+      const jsonPath = path.join(dir, `recording-${id}.json`);
+      const agentPath = path.join(dir, `recording-${id}.agent.json`);
+      if (!fs.existsSync(jsonPath)) return void res.writeHead(404).end("Recording not found");
+
+      const events = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as RrwebEvent[];
+      let offsetMs: number | null = null;
+      const t = url.searchParams.get("t");
+      if (t !== null) {
+        const parsed = Number(t) * 1000;
+        offsetMs = Number.isNaN(parsed) ? null : parsed;
+      } else if (fs.existsSync(agentPath)) {
+        const data = JSON.parse(fs.readFileSync(agentPath, "utf8")) as AgentData;
+        offsetMs = resolveActionByQuery(data, url)?.offsetMs ?? null;
+      }
+
+      if (offsetMs === null) {
+        return void res
+          .writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+          .end(textPage("Rendered state", `<span class="dim">Pass ?action=ACTION_ID or ?t=SECONDS.</span>\n\n${timestampForm(originFromReq(req), id)}`));
+      }
+
+      renderHtmlAtOffset(events, offsetMs)
+        .then((html) => res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(html || "<p>No content at this timestamp.</p>"))
+        .catch(() => res.writeHead(500).end("Render failed"));
+      return;
+    }
+
+    // Agent API (spec sections 6, 7, 11, 13): metadata, semantic actions,
+    // programmatic diff and search for a recording, so an agent given just
+    // the URL can understand it without downloading the raw rrweb event
+    // stream or calling an LLM. All of it is read from the sidecar
+    // `<id>.agent.json` built once at save time (see handleNativeHostEvent
+    // -> agent-pipeline.ts) -- no tokens/auth/rate-limits, since this only
+    // binds 127.0.0.1 and there's a single local user.
+    const agentMatch = url.pathname.match(/^\/api\/agent\/recordings\/(\d+)(\/(actions|diff|search|range|network))?$/);
+    if (agentMatch && req.method === "GET") {
+      const id = agentMatch[1];
+      const jsonPath = path.join(dir, `recording-${id}.json`);
+      const agentPath = path.join(dir, `recording-${id}.agent.json`);
+      if (!fs.existsSync(jsonPath)) return void json(404, { error: "Recording not found" });
+      if (!fs.existsSync(agentPath)) return void json(202, { status: "processing", message: "Deterministic action/state extraction hasn't finished yet -- retry shortly." });
+
+      const data = JSON.parse(fs.readFileSync(agentPath, "utf8")) as AgentData;
+      const sub = agentMatch[3];
+
+      if (sub === "actions") return void json(200, { actions: data.actions });
+
+      if (sub === "network") return void json(200, { network: data.network });
+
+      if (sub === "range") {
+        const from = Number(url.searchParams.get("from") ?? 0);
+        const to = Number(url.searchParams.get("to") ?? Infinity);
+        return void json(200, { actions: data.actions.filter((a) => a.offsetMs >= from && a.offsetMs <= to) });
+      }
+
+      if (sub === "search") {
+        const q = url.searchParams.get("q") ?? "";
+        return void json(200, { results: searchAgentData(data, q) });
+      }
+
+      if (sub === "diff") {
+        const before = data.states[url.searchParams.get("before") ?? ""];
+        const after = data.states[url.searchParams.get("after") ?? ""];
+        if (!before || !after) return void json(400, { error: "before/after must be existing action ids" });
+        return void json(200, diffStates(before, after));
+      }
+
+      const events = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as Array<{ timestamp?: number }>;
+      const first = events[0]?.timestamp ?? 0;
+      const last = events[events.length - 1]?.timestamp ?? first;
+      json(200, {
+        schema_version: "1.0",
+        recording: { id, duration_seconds: (last - first) / 1000 },
+        summary: { action_count: data.actions.length },
+        links: {
+          actions: `/api/agent/recordings/${id}/actions`,
+          search: `/api/agent/recordings/${id}/search?q=`,
+          range: `/api/agent/recordings/${id}/range?from=&to=`,
+          diff: `/api/agent/recordings/${id}/diff?before=&after=`,
+          network: `/api/agent/recordings/${id}/network`,
+          replay: `/agent/recordings/${id}`,
+        },
+      });
+      return;
+    }
+
+    // Per-action state (spec sections 9 & 12): what was on screen, and what
+    // the clicked/typed element looked like, at that action's moment.
+    const stateMatch = url.pathname.match(/^\/api\/agent\/recordings\/(\d+)\/actions\/(act_\d+)\/state$/);
+    if (stateMatch && req.method === "GET") {
+      const [, id, actionId] = stateMatch;
+      const agentPath = path.join(dir, `recording-${id}.agent.json`);
+      if (!fs.existsSync(agentPath)) return void json(404, { error: "Recording or action not found" });
+      const data = JSON.parse(fs.readFileSync(agentPath, "utf8")) as AgentData;
+      const action = data.actions.find((a) => a.id === actionId);
+      const state = data.states[actionId];
+      if (!action || !state) return void json(404, { error: "Recording or action not found" });
+      json(200, { offsetMs: action.offsetMs, target: action.target, ...state });
+      return;
+    }
+
     if (url.pathname === "/demoly/status" && req.method === "GET") {
       json(200, demolyClient.getStatus());
       return;
@@ -813,9 +1271,7 @@ export class CompanionCore extends EventEmitter {
             const meta = events.find((e: { type?: number }) => e.type === 4) as { data?: { href?: string } } | undefined;
             const first = events[0]?.timestamp ?? 0;
             const last = events[events.length - 1]?.timestamp ?? first;
-            const comments = (events as Array<{ type?: number; timestamp?: number; data?: { tag?: string; payload?: { text?: string } } }>)
-              .filter((e) => e.type === 5 && e.data?.tag === "wingman-comment")
-              .map((e) => ({ text: e.data?.payload?.text ?? "", offsetMs: (e.timestamp ?? first) - first }));
+            const comments = extractActions(events).map((a) => ({ text: a.text, offsetMs: a.offsetMs }));
             const result = await demolyClient.upload({
               events,
               sourceUrl: meta?.data?.href ?? "",
@@ -832,12 +1288,12 @@ export class CompanionCore extends EventEmitter {
     }
 
     const file = path.join(dir, path.basename(decodeURIComponent(url.pathname)));
-    fs.readFile(file, (err, data) => {
+    fs.readFile(file, "utf8", (err, data) => {
       if (err) {
         res.writeHead(404).end();
         return;
       }
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(data);
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(resolveReplayHtml(dir, path.basename(file), data, req));
     });
   }
 

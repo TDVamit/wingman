@@ -9,6 +9,7 @@ esbuild.buildSync({
   entryPoints: {
     background: path.join(__dirname, "src/background.ts"),
     "content-script": path.join(__dirname, "src/content-script.ts"),
+    "network-patch": path.join(__dirname, "src/network-patch.ts"),
     "demoly-handshake": path.join(__dirname, "src/demoly-handshake.ts"),
     "replay-detect": path.join(__dirname, "src/replay-detect.ts"),
     popup: path.join(__dirname, "src/popup.ts"),
@@ -35,6 +36,7 @@ esbuild.buildSync({
 esbuild.buildSync({
   entryPoints: {
     "content-script": path.join(__dirname, "src/content-script.ts"),
+    "network-patch": path.join(__dirname, "src/network-patch.ts"),
     "demoly-handshake": path.join(__dirname, "src/demoly-handshake.ts"),
     "replay-detect": path.join(__dirname, "src/replay-detect.ts"),
   },

@@ -51,6 +51,24 @@ if (!(window as any).__browserAgentInjected) {
   let eventBuffer: unknown[] = [];
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // ---------------------------------------------------------------------
+  // Network capture: the actual fetch/XHR patching runs in the page's MAIN
+  // world (injected/toggled by background.ts via network-patch.ts) because
+  // a content script's window is a separate isolated-world global -- patching
+  // window.fetch here would never see the page's own fetch calls. The main-
+  // world patch relays each completed request via a DOM CustomEvent (shared
+  // across worlds), which this listener turns into an rrweb custom event
+  // read back deterministically by agent-pipeline.ts.
+  // ---------------------------------------------------------------------
+  const MAX_NETWORK_EVENTS = 500; // ponytail: hard cap so a chatty page can't flood the recording
+  let networkEventCount = 0;
+
+  window.addEventListener("wingman-network-entry", (e: Event) => {
+    if (networkEventCount >= MAX_NETWORK_EVENTS) return;
+    networkEventCount++;
+    addCustomEvent("wingman-network", (e as CustomEvent).detail);
+  });
+
   function flush(done: boolean): void {
     if (eventBuffer.length === 0 && !done) return;
     const events = eventBuffer;
@@ -217,6 +235,7 @@ if (!(window as any).__browserAgentInjected) {
         recordCanvas: false,
         maskInputOptions: { password: true },
       }) ?? null;
+    networkEventCount = 0;
     showStopOverlay();
     return { ok: true, data: { started: true } };
   }
