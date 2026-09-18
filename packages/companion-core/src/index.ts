@@ -509,7 +509,7 @@ player.addEventListener("ui-update-current-time", (e) => {
 
 const copyForAiBtn = document.getElementById("copy-for-ai-btn");
 copyForAiBtn.addEventListener("click", () => {
-  const text = window.location.origin + "/agent/recordings/" + RECORDING_ID;
+  const text = window.location.origin + "/agent/recordings/" + RECORDING_ID + "/agents.txt";
   navigator.clipboard.writeText(text).then(() => {
     copyForAiBtn.textContent = "Copied";
     setTimeout(() => (copyForAiBtn.textContent = "Copy for AI"), 1500);

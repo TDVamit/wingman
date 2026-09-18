@@ -34,7 +34,7 @@ reasonable thing for a browsing-capable agent to do, but it meant:
 - Some browsing tools don't reliably surface everything in a hidden
   (`display:none`) block the same way a plain-text fetch would.
 
-## Fix: name the URL, add a plain-text fallback
+## Fix: name the URL, make the plain-text version the main link
 
 Two changes:
 
@@ -42,11 +42,14 @@ Two changes:
    (and every sub-route under it). The path itself now hints to any agent —
    human-written or not — that this is a scrapable/agent-oriented resource,
    not just another replay link.
-2. **Added a plain-text fallback**: `/agent/recordings/:id/agents.txt`,
-   serving the exact same instructions as a standalone `text/plain`
-   resource. An agent that *can* do a plain fetch gets a clean text response
-   with zero DOM/rendering involved; one that can't still has the HTML page
-   with the same content.
+2. **`/agent/recordings/:id/agents.txt` is the main agent link**, not a
+   fallback. It serves the exact same instructions as a standalone
+   `text/plain` resource — zero DOM, zero rendering, just a fetchable URL —
+   so it's the one to hand an agent, or the one an agent should try first if
+   it found the recording URL on its own. The HTML replay page still carries
+   the identical instructions (hidden, DOM-present) for an agent that opens
+   the recording link directly rather than being handed `agents.txt`, but
+   `agents.txt` is what "Copy for AI" on the replay page actually copies.
 
 ## Then: build out actual tools, not just instructions
 
@@ -102,10 +105,12 @@ real link there — don't assume it can or will construct the URL itself.
   reason to clutter the replay page a human is looking at.
 - A "Copy for AI" button was added so a human could hand the same
   instructions to an agent manually, for tools that can't open the URL
-  themselves — this initially copied the (now-hidden) instructions text,
-  and was later fixed to copy the recording's URL instead, since the URL is
-  what actually gets an agent to the gateway; the instructions are what it
-  reads once it's there.
+  themselves. It went through two fixes: first it copied the (now-hidden)
+  instructions text, when what an agent actually needs is a URL it can
+  open — fixed to copy a link instead. Then the link itself was wrong: it
+  pointed at the HTML replay page, when `/agents.txt` (the plain-text,
+  zero-DOM entry point) is the one an agent should actually be handed —
+  fixed to copy that instead.
 
 ## Last additions: network capture, for debugging, and full render
 
@@ -143,18 +148,19 @@ can be, so there's less reason to throw the whole thing away.
 ## Where it ended up
 
 ```
-/agent/recordings/:id
+/agent/recordings/:id/agents.txt   -- MAIN LINK: plain text, no DOM required
+/agent/recordings/:id              -- same instructions, embedded in the replay page
  ├─ actions      -- what happened, with timestamps
  │   ├─ state    -- compact semantic state at a point
  │   ├─ render   -- full reconstructed HTML at that point
  │   └─ diff     -- what changed between two points
  ├─ search       -- full-text search across all of the above
  ├─ network      -- captured fetch/XHR requests
- ├─ console      -- captured console.log/info/warn/error/debug output
- └─ agents.txt   -- the instructions, as plain text, no DOM required
+ └─ console      -- captured console.log/info/warn/error/debug output
 ```
 
 Same data, two consumption modes: a browsing-capable agent (or a human
-handing off via "Copy for AI") can just open the URL and follow real links;
-anything MCP-capable gets the same data faster, directly as JSON — MCP is
-the optional shortcut here, never the requirement.
+handing off via "Copy for AI", which copies the `agents.txt` link) can just
+open the URL and follow real links; anything MCP-capable gets the same data
+faster, directly as JSON — MCP is the optional shortcut here, never the
+requirement.

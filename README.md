@@ -230,10 +230,13 @@ alongside the replay page, plain HTML/text so any agent that can open a URL
 can read it — Claude opening the link in a browser tab works the same as an
 MCP call, just slower:
 
-- `/agent/recordings/:id` — entry point: links to every sub-route below,
-  plus hidden (DOM-present, not visually rendered) instructions a human can
-  hand an agent manually via the replay page's "Copy for AI" button, or the
-  identical content served standalone at `/agent/recordings/:id/agents.txt`.
+- `/agent/recordings/:id/agents.txt` — the main agent entry point: plain
+  text, no DOM/rendering required, linking to every sub-route below. This is
+  what the replay page's "Copy for AI" button copies, for a human handing a
+  recording to an agent manually.
+- `/agent/recordings/:id` — the same instructions, embedded (hidden,
+  DOM-present but not visually rendered) in the human-facing replay page,
+  for an agent that opens the recording link directly instead.
 - `/agent/recordings/:id/actions` — every semantic action (click/type/scroll/...)
   with a timestamp and target, linking to that action's state/diff/render.
 - `/agent/recordings/:id/state?action=<id>` or `?t=<seconds>` — compact
