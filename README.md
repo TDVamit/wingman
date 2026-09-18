@@ -27,6 +27,15 @@ What it adds to a plain Demoly recording:
 - **Upload to Demoly, with comments** — one click on the replay page pushes
   the recording (plus every AI comment) into your Demoly workspace as a
   shareable session.
+- **Agent-readable recordings** — every recording is also exposed as a
+  browser-first "agent gateway" (`/agent/recordings/:id` and sub-routes for
+  actions/state/diff/search/network/render, plus a JSON API) so any agent
+  that can open a URL — not just one with MCP access — can deterministically
+  read back what happened: semantic actions, page state at a timestamp,
+  diffs between two points, full-text search, and captured network requests
+  (method, URL, status, duration, headers with auth/cookie values redacted,
+  and small text/FormData bodies). No LLM involved in the extraction; MCP is
+  optional/faster, never required. See "Agent-readable recordings" below.
 
 Because it's a real MCP server plus a real Native Messaging connection,
 **both** Claude Desktop and Codex CLI can be connected at once and share the
@@ -209,6 +218,40 @@ GPU backend, or headed vs. headless (confirmed by benchmarking; see git
 history/commit messages in `packages/companion-core/src/index.ts` for
 details). Getting past that ceiling would require real OS-level screen
 recording instead.
+
+## Agent-readable recordings
+
+Every saved recording gets a `.agent.json` sidecar, computed once
+deterministically from the raw rrweb events (a headless Chromium pass to
+resolve DOM state, no LLM). It backs a browser-first "agent gateway" served
+alongside the replay page, plain HTML/text so any agent that can open a URL
+can read it — Claude opening the link in a browser tab works the same as an
+MCP call, just slower:
+
+- `/agent/recordings/:id` — entry point: links to every sub-route below,
+  plus hidden (DOM-present, not visually rendered) instructions a human can
+  hand an agent manually via the replay page's "Copy for AI" button, or the
+  identical content served standalone at `/agent/recordings/:id/agents.txt`.
+- `/agent/recordings/:id/actions` — every semantic action (click/type/scroll/...)
+  with a timestamp and target, linking to that action's state/diff/render.
+- `/agent/recordings/:id/state?action=<id>` or `?t=<seconds>` — compact
+  semantic state (headings, inputs, table shape) at a point in the recording.
+- `/agent/recordings/:id/render?action=<id>` — full reconstructed HTML at
+  that point (on-demand headless render), for when the compact state isn't
+  enough to inspect actual content (e.g. table row values).
+- `/agent/recordings/:id/diff?before=<id>&after=<id>` — added/removed/changed
+  content between two actions.
+- `/agent/recordings/:id/search?q=<query>` — full-text search across
+  actions, state, and network requests.
+- `/agent/recordings/:id/network` — every `fetch`/XHR request captured
+  during the recording: method, URL, status, duration, headers (auth/cookie
+  values redacted, header names kept), and text/FormData bodies up to 2000
+  chars (larger or non-text bodies are dropped entirely, never truncated).
+  Captured by patching `fetch`/`XMLHttpRequest` in the recorded page's own
+  JS world (a content script's isolated world can't see the page's real
+  requests) for the duration of the recording only.
+- `/api/agent/recordings/:id[/actions|diff|search|range|network]` — the same
+  data as JSON, for a client that wants to skip the HTML.
 
 ## Known limitations (POC scope)
 
