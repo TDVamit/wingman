@@ -1,16 +1,18 @@
 // Injected into the page's MAIN world by background.ts (chrome.scripting
-// world: "MAIN") to patch fetch/XHR where the page's own calls actually run
-// -- a content script's window is a separate isolated-world global, so
-// patching window.fetch there never sees the page's real requests. Toggles
-// on/off: calling this file a second time undoes the patch, so background.ts
-// can inject it once at recording start and once at recording stop without
-// extra messaging.
+// world: "MAIN") to patch fetch/XHR/console where the page's own calls
+// actually run -- a content script's window is a separate isolated-world
+// global, so patching window.fetch/console there never sees the page's real
+// calls. Toggles on/off: calling this file a second time undoes the patch,
+// so background.ts can inject it once at recording start and once at
+// recording stop without extra messaging.
 //
 // Captured entries are relayed to the isolated-world content script via a
 // DOM CustomEvent (the DOM is shared across worlds; window objects are not).
-// Headers/bodies follow the same privacy rules as the rest of the pipeline:
-// auth/cookie header values are redacted (name kept), and bodies over
-// MAX_BODY_CHARS are dropped entirely rather than truncated.
+// Network headers/bodies follow the pipeline's privacy rules: auth/cookie
+// header values are redacted (name kept), and bodies over MAX_BODY_CHARS are
+// dropped entirely rather than truncated. Console messages are capped at
+// MAX_LOG_CHARS too, but truncated (not dropped) -- logs aren't credential
+// carriers the way request bodies can be.
 export {};
 
 (() => {
@@ -137,10 +139,34 @@ export {};
     return (originalXhrSend as any).apply(this, args);
   };
 
+  const MAX_LOG_CHARS = 2000;
+  const CONSOLE_LEVELS = ["log", "info", "warn", "error", "debug"] as const;
+
+  function formatArg(arg: unknown): string {
+    if (typeof arg === "string") return arg;
+    try {
+      return JSON.stringify(arg);
+    } catch {
+      return String(arg);
+    }
+  }
+
+  const originalConsole: Partial<Record<(typeof CONSOLE_LEVELS)[number], (...args: unknown[]) => void>> = {};
+  for (const level of CONSOLE_LEVELS) {
+    originalConsole[level] = console[level];
+    console[level] = (...args: unknown[]) => {
+      originalConsole[level]!.apply(console, args);
+      let message = args.map(formatArg).join(" ");
+      if (message.length > MAX_LOG_CHARS) message = message.slice(0, MAX_LOG_CHARS) + "…[truncated]";
+      window.dispatchEvent(new CustomEvent("wingman-console-entry", { detail: { level, message } }));
+    };
+  }
+
   w.__wingmanNetworkUnpatch = () => {
     window.fetch = originalFetch;
     OrigXHR.prototype.open = originalXhrOpen;
     OrigXHR.prototype.send = originalXhrSend;
     OrigXHR.prototype.setRequestHeader = originalXhrSetRequestHeader;
+    for (const level of CONSOLE_LEVELS) console[level] = originalConsole[level]!;
   };
 })();

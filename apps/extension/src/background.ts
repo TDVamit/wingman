@@ -129,7 +129,7 @@ async function startRecording(): Promise<{ ok: true } | { ok: false; code: "RECO
   if (!isSupportedUrl(tab.url)) return { ok: false, code: "UNSUPPORTED_PAGE", error: `Cannot record ${tab.url}` };
 
   await ensureContentScriptAndSend(tab.id!, { op: "recording.begin" });
-  // Network patching must run in the page's MAIN world (see network-patch.ts)
+  // Network/console patching must run in the page's MAIN world (see network-patch.ts)
   // -- a content script's window is a separate isolated-world global.
   await chrome.scripting.executeScript({ target: { tabId: tab.id! }, world: "MAIN", files: ["network-patch.js"] });
   recording = { recording: true, startedAt: Date.now() };

@@ -29,13 +29,15 @@ What it adds to a plain Demoly recording:
   shareable session.
 - **Agent-readable recordings** — every recording is also exposed as a
   browser-first "agent gateway" (`/agent/recordings/:id` and sub-routes for
-  actions/state/diff/search/network/render, plus a JSON API) so any agent
-  that can open a URL — not just one with MCP access — can deterministically
-  read back what happened: semantic actions, page state at a timestamp,
-  diffs between two points, full-text search, and captured network requests
-  (method, URL, status, duration, headers with auth/cookie values redacted,
-  and small text/FormData bodies). No LLM involved in the extraction; MCP is
-  optional/faster, never required. See "Agent-readable recordings" below.
+  actions/state/diff/search/network/console/render, plus a JSON API) so any
+  agent that can open a URL — not just one with MCP access — can
+  deterministically read back what happened: semantic actions, page state at
+  a timestamp, diffs between two points, full-text search, captured network
+  requests (method, URL, status, duration, headers with auth/cookie values
+  redacted, and small text/FormData bodies), and captured console output
+  (log/info/warn/error/debug, truncated at 2000 chars each). No LLM involved
+  in the extraction; MCP is optional/faster, never required. See
+  "Agent-readable recordings" below.
 
 Because it's a real MCP server plus a real Native Messaging connection,
 **both** Claude Desktop and Codex CLI can be connected at once and share the
@@ -242,16 +244,19 @@ MCP call, just slower:
 - `/agent/recordings/:id/diff?before=<id>&after=<id>` — added/removed/changed
   content between two actions.
 - `/agent/recordings/:id/search?q=<query>` — full-text search across
-  actions, state, and network requests.
+  actions, state, network requests, and console messages.
 - `/agent/recordings/:id/network` — every `fetch`/XHR request captured
   during the recording: method, URL, status, duration, headers (auth/cookie
   values redacted, header names kept), and text/FormData bodies up to 2000
   chars (larger or non-text bodies are dropped entirely, never truncated).
-  Captured by patching `fetch`/`XMLHttpRequest` in the recorded page's own
-  JS world (a content script's isolated world can't see the page's real
-  requests) for the duration of the recording only.
-- `/api/agent/recordings/:id[/actions|diff|search|range|network]` — the same
-  data as JSON, for a client that wants to skip the HTML.
+- `/agent/recordings/:id/console` — every `console.log`/`info`/`warn`/
+  `error`/`debug` call made during the recording, each message truncated
+  (not dropped) at 2000 chars.
+  Both are captured by patching `fetch`/`XMLHttpRequest`/`console` in the
+  recorded page's own JS world (a content script's isolated world can't see
+  the page's real calls) for the duration of the recording only.
+- `/api/agent/recordings/:id[/actions|diff|search|range|network|console]` —
+  the same data as JSON, for a client that wants to skip the HTML.
 
 ## Known limitations (POC scope)
 

@@ -50,6 +50,14 @@ export interface NetworkEntry {
   responseBody?: string;
 }
 
+export interface ConsoleEntry {
+  offsetMs: number;
+  level: "log" | "info" | "warn" | "error" | "debug";
+  // Capped at MAX_LOG_CHARS in network-patch.ts, truncated (not dropped) --
+  // console messages aren't credential carriers the way request bodies are.
+  message: string;
+}
+
 export interface ActionsAndStates {
   actions: AgentAction[];
   states: Record<string, AgentState>;
@@ -57,6 +65,7 @@ export interface ActionsAndStates {
 
 export interface AgentData extends ActionsAndStates {
   network: NetworkEntry[];
+  console: ConsoleEntry[];
 }
 
 export type RrwebEvent = { type?: number; timestamp?: number; data?: any };
@@ -216,14 +225,24 @@ function extractNetwork(events: RrwebEvent[]): NetworkEntry[] {
     .map((e) => ({ offsetMs: (e.timestamp ?? base) - base, ...(e.data.payload as Omit<NetworkEntry, "offsetMs">) }));
 }
 
+// Same deterministic JSON-filtering approach as extractNetwork, for
+// "wingman-console" custom events (see network-patch.ts's console patch).
+function extractConsole(events: RrwebEvent[]): ConsoleEntry[] {
+  const base = events[0]?.timestamp ?? 0;
+  return events
+    .filter((e) => e.type === 5 && e.data?.tag === "wingman-console")
+    .map((e) => ({ offsetMs: (e.timestamp ?? base) - base, ...(e.data.payload as Omit<ConsoleEntry, "offsetMs">) }));
+}
+
 export async function buildAgentData(events: RrwebEvent[]): Promise<AgentData> {
   const network = extractNetwork(events);
-  if (events.length === 0) return { actions: [], states: {}, network };
+  const consoleLog = extractConsole(events);
+  if (events.length === 0) return { actions: [], states: {}, network, console: consoleLog };
   const points = pickInteresting(events);
-  if (points.length === 0) return { actions: [], states: {}, network };
+  if (points.length === 0) return { actions: [], states: {}, network, console: consoleLog };
 
   const raw = await withReplayerPage((page) => page.evaluate(browserExtract, { events, points } as any));
-  return { ...attachIntents(raw as ActionsAndStates, events), network };
+  return { ...attachIntents(raw as ActionsAndStates, events), network, console: consoleLog };
 }
 
 // Runs inside the headless page: replays up to the requested offset and hands
@@ -298,9 +317,9 @@ export function summarizeStateChange(before: AgentState | undefined, after: Agen
 
 // Full-text search over action labels/intent + visible state text -- section
 // 13. Linear scan: recordings are, at most, a few hundred actions.
-export function searchAgentData(data: AgentData, query: string): Array<{ type: "action" | "state" | "network"; id: string; offsetMs: number; match: string }> {
+export function searchAgentData(data: AgentData, query: string): Array<{ type: "action" | "state" | "network" | "console"; id: string; offsetMs: number; match: string }> {
   const needle = query.toLowerCase();
-  const results: Array<{ type: "action" | "state" | "network"; id: string; offsetMs: number; match: string }> = [];
+  const results: Array<{ type: "action" | "state" | "network" | "console"; id: string; offsetMs: number; match: string }> = [];
   for (const a of data.actions) {
     const hay = `${a.target.label} ${a.intent ?? ""}`.toLowerCase();
     if (needle && hay.includes(needle)) results.push({ type: "action", id: a.id, offsetMs: a.offsetMs, match: a.target.label || a.intent || "" });
@@ -312,11 +331,12 @@ export function searchAgentData(data: AgentData, query: string): Array<{ type: "
       if (t.toLowerCase().includes(needle)) results.push({ type: "state", id: a.id, offsetMs: a.offsetMs, match: t });
     }
   }
-  // Matches on URL only -- request/response bodies and headers are never
-  // captured (see content-script.ts's network patch), so there's nothing
-  // else to search here.
+  // Matches on URL only, not request/response headers or bodies.
   for (const n of data.network) {
     if (needle && n.url.toLowerCase().includes(needle)) results.push({ type: "network", id: "", offsetMs: n.offsetMs, match: `${n.method} ${n.status || "ERR"} ${n.url}` });
+  }
+  for (const c of data.console) {
+    if (needle && c.message.toLowerCase().includes(needle)) results.push({ type: "console", id: "", offsetMs: c.offsetMs, match: `[${c.level}] ${c.message}` });
   }
   return results;
 }

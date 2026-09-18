@@ -294,6 +294,15 @@ function renderNetworkHtml(id: string, data: AgentData): string {
   return textPage(`Recording ${id} -- Network`, body);
 }
 
+function renderConsoleHtml(id: string, data: AgentData): string {
+  const rows = data.console.map((c) => `[${fmtTs(c.offsetMs)}] (${c.level}) ${escapeHtml(c.message)}`);
+  const body =
+    `<h1>Recording ${escapeHtml(id)} -- Console</h1>\n` +
+    `<span class="dim">${data.console.length} console messages captured (log/info/warn/error/debug, up to 2000 chars each -- longer messages are truncated).</span>\n\n` +
+    (rows.length ? rows.join("\n") : "<span class=\"dim\">No console messages captured for this recording.</span>");
+  return textPage(`Recording ${id} -- Console`, body);
+}
+
 // Baked into saved replay .html files at write time, when the eventual request host
 // (localhost vs. a tunnel like trycloudflare.com) isn't known yet -- swapped for the
 // real origin in handleStaticRequest when the file is served, so the same saved file
@@ -342,6 +351,7 @@ function agentLinks(id: string, base: string): Array<{ label: string; url: strin
     { label: "Rendered HTML state (only when needed)", url: `${base}/agent/recordings/${id}/render?action=ACTION_ID` },
     { label: "Diff (only when needed)", url: `${base}/agent/recordings/${id}/diff?before=ACTION_ID&after=ACTION_ID` },
     { label: "Network requests (fetch/XHR captured during recording)", url: `${base}/agent/recordings/${id}/network` },
+    { label: "Console messages (log/info/warn/error/debug captured during recording)", url: `${base}/agent/recordings/${id}/console` },
     { label: "JSON equivalent (for scripted access)", url: `${base}/api/agent/recordings/${id}` },
     { label: "JSON action range (for long recordings)", url: `${base}/api/agent/recordings/${id}/range?from=&to=` },
   ];
@@ -1098,7 +1108,7 @@ export class CompanionCore extends EventEmitter {
     // so a generic browser agent (e.g. Claude just opening the recording URL
     // in a real tab) can navigate it like any other webpage instead of
     // constructing API calls by hand.
-    const rSubMatch = url.pathname.match(/^\/agent\/recordings\/(\d+)\/(actions|state|diff|search|network)$/);
+    const rSubMatch = url.pathname.match(/^\/agent\/recordings\/(\d+)\/(actions|state|diff|search|network|console)$/);
     if (rSubMatch && req.method === "GET") {
       const [, id, sub] = rSubMatch;
       const agentPath = path.join(dir, `recording-${id}.agent.json`);
@@ -1116,7 +1126,9 @@ export class CompanionCore extends EventEmitter {
               ? renderDiffHtml(id, data, url.searchParams.get("before"), url.searchParams.get("after"))
               : sub === "network"
                 ? renderNetworkHtml(id, data)
-                : renderSearchHtml(id, data, url.searchParams.get("q") ?? "");
+                : sub === "console"
+                  ? renderConsoleHtml(id, data)
+                  : renderSearchHtml(id, data, url.searchParams.get("q") ?? "");
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(html);
       return;
     }
@@ -1164,7 +1176,7 @@ export class CompanionCore extends EventEmitter {
     // `<id>.agent.json` built once at save time (see handleNativeHostEvent
     // -> agent-pipeline.ts) -- no tokens/auth/rate-limits, since this only
     // binds 127.0.0.1 and there's a single local user.
-    const agentMatch = url.pathname.match(/^\/api\/agent\/recordings\/(\d+)(\/(actions|diff|search|range|network))?$/);
+    const agentMatch = url.pathname.match(/^\/api\/agent\/recordings\/(\d+)(\/(actions|diff|search|range|network|console))?$/);
     if (agentMatch && req.method === "GET") {
       const id = agentMatch[1];
       const jsonPath = path.join(dir, `recording-${id}.json`);
@@ -1178,6 +1190,8 @@ export class CompanionCore extends EventEmitter {
       if (sub === "actions") return void json(200, { actions: data.actions });
 
       if (sub === "network") return void json(200, { network: data.network });
+
+      if (sub === "console") return void json(200, { console: data.console });
 
       if (sub === "range") {
         const from = Number(url.searchParams.get("from") ?? 0);
@@ -1210,6 +1224,7 @@ export class CompanionCore extends EventEmitter {
           range: `/api/agent/recordings/${id}/range?from=&to=`,
           diff: `/api/agent/recordings/${id}/diff?before=&after=`,
           network: `/api/agent/recordings/${id}/network`,
+          console: `/api/agent/recordings/${id}/console`,
           replay: `/agent/recordings/${id}`,
         },
       });

@@ -61,12 +61,21 @@ if (!(window as any).__browserAgentInjected) {
   // read back deterministically by agent-pipeline.ts.
   // ---------------------------------------------------------------------
   const MAX_NETWORK_EVENTS = 500; // ponytail: hard cap so a chatty page can't flood the recording
+  const MAX_CONSOLE_EVENTS = 500;
   let networkEventCount = 0;
+  let consoleEventCount = 0;
 
   window.addEventListener("wingman-network-entry", (e: Event) => {
     if (networkEventCount >= MAX_NETWORK_EVENTS) return;
     networkEventCount++;
     addCustomEvent("wingman-network", (e as CustomEvent).detail);
+  });
+
+  // Same MAIN-world relay as network capture above, for console.log/info/warn/error/debug.
+  window.addEventListener("wingman-console-entry", (e: Event) => {
+    if (consoleEventCount >= MAX_CONSOLE_EVENTS) return;
+    consoleEventCount++;
+    addCustomEvent("wingman-console", (e as CustomEvent).detail);
   });
 
   function flush(done: boolean): void {
@@ -236,6 +245,7 @@ if (!(window as any).__browserAgentInjected) {
         maskInputOptions: { password: true },
       }) ?? null;
     networkEventCount = 0;
+    consoleEventCount = 0;
     showStopOverlay();
     return { ok: true, data: { started: true } };
   }
